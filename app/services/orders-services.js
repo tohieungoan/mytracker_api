@@ -5,7 +5,7 @@ const userServices = require("./user-services");
 const axios = require('axios');
 const API_KEY = "493393B56F8C1A4A979C3D77E41496EB"; 
 
-async function getTrackingInfo(trackingNumber) {
+async function getTrackingInfo(trackingNumber,carrier) {
   try {
     const options = {
       method: 'POST',
@@ -114,10 +114,12 @@ exports.findOne = async (req, res) => {
   try {
     const userId = req.userId;
     const trackingNumber = req.body.tracking_number;
+    const carrier = req.body.carrier_code;
     
     const orderFromDb = await Order.findOne({
       where: {
         tracking_number: trackingNumber,
+        carrier_code: carrier,
         userId: userId
       }
     });
@@ -128,7 +130,7 @@ exports.findOne = async (req, res) => {
       });
     }
 
-    const trackingInfo = await getTrackingInfo(trackingNumber);
+    const trackingInfo = await getTrackingInfo(trackingNumber, carrier);
     
     const combinedData = {
       ...orderFromDb.toJSON(), 

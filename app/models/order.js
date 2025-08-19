@@ -5,7 +5,7 @@ module.exports = (sequelize, Sequelize) => {
       type: Sequelize.STRING,
       unique: true 
     },
-    carrier_name: {
+    carrier_code: {
       type: Sequelize.STRING
     },
     status: {
