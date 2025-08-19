@@ -3,10 +3,24 @@ const Order = db.order;
 const Op = db.Sequelize.Op;
 const userServices = require("./user-services");
 const axios = require('axios');
-const API_KEY = "493393B56F8C1A4A979C3D77E41496EB"; 
+const API_KEY = "493393B56F8C1A4A979C3D77E41496EB";
 
-async function getTrackingInfo(trackingNumber,carrier) {
+/**
+ * Lấy thông tin theo dõi từ API 17track.
+ *
+ * @param {Array|Object} trackingData - Một mảng hoặc một đối tượng chứa thông tin theo dõi.
+ * @param {string} trackingData.number - Mã vận đơn.
+ * @param {string|number} trackingData.carrier - Mã nhà vận chuyển.
+ * @returns {Promise<Object>} Dữ liệu theo dõi từ API.
+ */
+async function getTrackingInfo(trackingData) {
   try {
+    const dataToSend = Array.isArray(trackingData) ? trackingData : [trackingData];
+    const formattedData = dataToSend.map(item => ({
+      number: item.number,
+      carrier: parseInt(item.carrier)
+    }));
+    
     const options = {
       method: 'POST',
       url: 'https://api.17track.net/track/v2.4/gettrackinfo',
@@ -14,19 +28,47 @@ async function getTrackingInfo(trackingNumber,carrier) {
         'content-type': 'application/json',
         '17token': API_KEY
       },
-      data: JSON.stringify([{
-        "number": trackingNumber,
-        "carrier": 100538
-      }])
+      data: JSON.stringify(formattedData)
     };
-    
+
     const response = await axios.request(options);
     return response.data;
   } catch (error) {
     console.error("Lỗi khi gọi API 17TRACK: ", error.message);
-    return null;
+    if (error.response) {
+      console.error("Thông tin lỗi từ API:", error.response.data);
+    }
+    throw error;
   }
 }
+
+async function changecarrier(trackingNumber, carrierold, carriernew) {
+  try {
+    const options = {
+      method: 'POST',
+      url: 'https://api.17track.net/track/v2.4/changecarrier',
+      headers: {
+        'content-type': 'application/json',
+        '17token': API_KEY
+      },
+      data: JSON.stringify([
+        {
+          number: trackingNumber,
+          carrier_old: parseInt(carrierold),
+          carrier_new: parseInt(carriernew)
+        }
+      ])
+    };
+
+    const response = await axios(options);
+    return response.data;
+
+  } catch (error) {
+    console.error('Error changing carrier:', error);
+    throw error;
+  }
+}
+
 exports.create = async (req, res) => {
   if (!req.body.tracking_number) {
     return res.status(400).send({
@@ -46,8 +88,8 @@ exports.create = async (req, res) => {
 
     if (existingOrder) {
       return res.status(409).send({
-      message: "Đơn hàng với mã vận đơn này đã tồn tại!"
-    });
+        message: "Đơn hàng với mã vận đơn này đã tồn tại!"
+      });
     }
 
     const order = {
@@ -56,7 +98,8 @@ exports.create = async (req, res) => {
       status: req.body.status,
       note: req.body.note,
       category: req.body.category,
-      userId: userId
+      userId: userId,
+      carrier_code: req.body.carrier_code
     };
 
     const data = await Order.create(order);
@@ -90,17 +133,33 @@ exports.create = async (req, res) => {
     });
   }
 };
-exports.findAll = (req, res) => {
-  const userId = req.userId;
-  Order.findAll({ where: { userId: userId } })
-    .then(data => {
-      res.send(data);
-    })
-    .catch(err => {
-      res.status(500).send({
-        message: err.message || "Đã xảy ra lỗi khi lấy tất cả đơn hàng!"
-      });
+
+exports.findAll = async (req, res) => {
+  try {
+    const userId = req.userId;
+    const orders = await Order.findAll({ where: { userId: userId } });
+
+    const trackingData = orders.map(order => ({
+      number: order.tracking_number,
+      carrier: order.carrier_code
+    }));
+    
+    const trackingInfo = await getTrackingInfo(trackingData);
+
+    const combinedData = orders.map(order => {
+      const info = trackingInfo.data.accepted.find(item => item.number === order.tracking_number);
+      return {
+        ...order.toJSON(),
+        tracking_info: info || null
+      };
     });
+
+    res.status(200).send(combinedData);
+  } catch (err) {
+    res.status(500).send({
+      message: err.message || "Đã xảy ra lỗi khi lấy tất cả đơn hàng!"
+    });
+  }
 };
 
 exports.findOne = async (req, res) => {
@@ -130,11 +189,11 @@ exports.findOne = async (req, res) => {
       });
     }
 
-    const trackingInfo = await getTrackingInfo(trackingNumber, carrier);
+    const trackingInfo = await getTrackingInfo({ number: trackingNumber, carrier: carrier });
     
     const combinedData = {
       ...orderFromDb.toJSON(), 
-      tracking_info: trackingInfo 
+      tracking_info: trackingInfo.data.accepted[0] || null
     };
 
     res.status(200).send(combinedData);
@@ -146,40 +205,45 @@ exports.findOne = async (req, res) => {
   }
 };
 
-exports.update = (req, res) => {
+exports.update = async (req, res) => {
   const id = req.body.id;
   const userId = req.userId;
 
   if (!id) {
-    res.status(400).send({
+    return res.status(400).send({
       message: "ID không được để trống!"
     });
-    return;
   }
 
-  Order.update(req.body, {
-    where: {
-      id: id,
-      userId: userId
+  try {
+    const order = await Order.findOne({ where: { id: id, userId: userId } });
+    if (!order) {
+      return res.status(404).send({ message: "Không tìm thấy đơn hàng!" });
     }
-  })
-    .then(num => {
-      if (num == 1) {
-        res.send({
-          message: "Đơn hàng đã được cập nhật thành công."
-        });
-      } else {
-        res.send({
-          message: "Cập nhật thất bại. Đơn hàng có thể không tồn tại hoặc bạn không có quyền!"
-        });
-      }
-    })
-    .catch(err => {
-      res.status(500).send({
-        message: "Đã xảy ra lỗi khi cập nhật đơn hàng với ID: " + id
-      });
-    });
+
+    let carrierChangeResult = null;
+    if (req.body.carrier_code && req.body.carrier_code.toString() !== order.carrier_code.toString()) {
+      carrierChangeResult = await changecarrier(order.tracking_number, order.carrier_code, req.body.carrier_code);
+    }
+
+    const [num] = await Order.update(req.body, { where: { id: id, userId: userId } });
+    
+    let responseMessage = "Đơn hàng đã được cập nhật thành công.";
+    if (carrierChangeResult) {
+        responseMessage += " Đã cập nhật nhà vận chuyển trên 17TRACK. Kết quả: " + JSON.stringify(carrierChangeResult);
+    }
+
+    if (num === 1) {
+      res.send({ message: responseMessage });
+    } else {
+      res.send({ message: "Cập nhật thất bại. Đơn hàng có thể không tồn tại hoặc bạn không có quyền!" });
+    }
+  } catch (err) {
+    console.error("Error updating order:", err);
+    res.status(500).send({ message: "Đã xảy ra lỗi khi cập nhật đơn hàng với ID: " + id });
+  }
 };
+
 
 exports.delete = (req, res) => {
   const id = req.body.id;

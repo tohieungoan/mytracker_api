@@ -14,6 +14,7 @@ module.exports = function(app) {
   app.post("/api/auth/get-order-by-trackingnumber", [jwtAuth.verifyToken], ordersServices.findOne);
 
   app.post("/api/auth/update-order", [jwtAuth.verifyToken], ordersServices.update);
+  
 
   app.post("/api/auth/delete-order", [jwtAuth.verifyToken], ordersServices.delete);
 };
